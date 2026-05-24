@@ -1,2 +1,9 @@
-Flask==3.0.3
-gunicorn==21.2.0
+fastapi
+uvicorn[standard]
+pymysql
+pymongo
+python-dotenv
+PyJWT
+bcrypt
+google-cloud-storage
+python-multipart

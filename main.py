@@ -504,12 +504,12 @@ def ganti_password_profil(user_id: int, data: UpdatePasswordRequest):
 # FITUR LANJUTAN LAPORAN (MOBILE-FRIENDLY)
 # ==========================================
 
+# PERBAIKAN: Mengubah pola URL (/api/feed/laporan) agar tidak bentrok dengan rute detail (/api/laporan/{laporan_id})
 # Endpoint 20: Feed Laporan (Pagination / Infinite Scroll)
-@app.get("/api/laporan/feed")
+@app.get("/api/feed/laporan")
 def get_laporan_feed(limit: int = 10, offset: int = 0):
     conn = get_mysql_connection()
     with conn.cursor() as cursor:
-        # Menggunakan f-string khusus untuk LIMIT dan OFFSET agar tidak dibungkus tanda kutip oleh PyMySQL
         sql = f"""
         SELECT id, lokasi_administratif, deskripsi_kerusakan, status_perbaikan 
         FROM laporan 
@@ -526,11 +526,10 @@ def get_laporan_feed(limit: int = 10, offset: int = 0):
     }
 
 # Endpoint 21: Pencarian Laporan (Search)
-@app.get("/api/laporan/search")
+@app.get("/api/search/laporan")
 def cari_laporan(keyword: str):
     conn = get_mysql_connection()
     with conn.cursor() as cursor:
-        # Pencarian fleksibel menggunakan klausul LIKE pada lokasi atau deskripsi
         sql = """
         SELECT id, lokasi_administratif, deskripsi_kerusakan, status_perbaikan 
         FROM laporan 
@@ -543,14 +542,12 @@ def cari_laporan(keyword: str):
     return {"data": hasil, "keyword": keyword}
 
 # Endpoint 22: Filter Laporan (Berdasarkan Kategori & Status)
-@app.get("/api/laporan/filter")
+@app.get("/api/filter/laporan")
 def filter_laporan(kategori_id: int = None, status: str = None):
     conn = get_mysql_connection()
-    # Membangun query dasar
     query = "SELECT id, lokasi_administratif, deskripsi_kerusakan, status_perbaikan FROM laporan WHERE 1=1"
     params = []
     
-    # Menambahkan filter secara dinamis jika parameter dikirimkan
     if kategori_id is not None:
         query += " AND kategori_id = %s"
         params.append(kategori_id)
@@ -567,8 +564,6 @@ def filter_laporan(kategori_id: int = None, status: str = None):
 # Endpoint 23: Fitur Upvote / Dukungan Warga (Disimpan di NoSQL)
 @app.post("/api/laporan/{laporan_id}/upvote")
 def upvote_laporan(laporan_id: str, user_id: int):
-    # Menggunakan $addToSet dari MongoDB untuk memasukkan user_id ke dalam array.
-    # Fitur ini otomatis menolak user_id yang sama jika sudah ada (mencegah double-vote).
     hasil = koleksi_laporan.update_one(
         {"laporan_id": laporan_id},
         {"$addToSet": {"dukungan_warga": user_id}}
@@ -587,24 +582,17 @@ GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "tcc-bucket-lapor")
 
 def upload_ke_gcs(file: UploadFile, folder_tujuan: str) -> str:
     try:
-        # Inisialisasi klien GCS
         storage_client = storage.Client()
         bucket = storage_client.bucket(GCS_BUCKET_NAME)
         
-        # Membuat nama file unik menggunakan token acak untuk menghindari duplikasi
         ekstensi = file.filename.split(".")[-1]
         nama_file_unik = f"{folder_tujuan}/{secrets.token_hex(16)}.{ekstensi}"
         
         blob = bucket.blob(nama_file_unik)
-        
-        # Unggah file ke bucket GCS
         blob.upload_from_file(file.file, content_type=file.content_type)
         
-        # Mengembalikan URL publik dari file yang berhasil diunggah
         return f"https://storage.googleapis.com/{GCS_BUCKET_NAME}/{nama_file_unik}"
     except Exception as e:
-        # Fallback untuk pengujian lokal jika kredensial Google Cloud belum diatur di laptop
-        # Ini mencegah server lokal crash dan memberikan simulasi URL tiruan (mock)
         print(f"GCS Upload Log: {str(e)}")
         ekstensi = file.filename.split(".")[-1]
         return f"https://storage.googleapis.com/{GCS_BUCKET_NAME}/{folder_tujuan}/mock_{secrets.token_hex(4)}.{ekstensi}"
@@ -613,7 +601,6 @@ def upload_ke_gcs(file: UploadFile, folder_tujuan: str) -> str:
 # Endpoint 24: Upload Foto Bukti Kerusakan Fasilitas
 @app.post("/api/upload/foto-kerusakan")
 def upload_foto_kerusakan(file: UploadFile = File(...)):
-    # Validasi format file untuk memastikan hanya gambar yang diunggah
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="File harus berupa gambar (JPEG/PNG)")
         
@@ -648,7 +635,6 @@ class KonfirmasiSelesai(BaseModel):
 def petugas_terima_tugas(tugas_id: int):
     conn = get_mysql_connection()
     with conn.cursor() as cursor:
-        # Cari data penugasan untuk mengambil UUID laporan_id (The Bridge)
         cursor.execute("SELECT laporan_id FROM penugasan_petugas WHERE id = %s", (tugas_id,))
         tugas = cursor.fetchone()
         if not tugas:
@@ -656,12 +642,10 @@ def petugas_terima_tugas(tugas_id: int):
             raise HTTPException(status_code=404, detail="ID Penugasan tidak ditemukan di MySQL")
         
         laporan_id = tugas['laporan_id']
-        # Update status perbaikan laporan di MySQL menjadi dikerjakan
         cursor.execute("UPDATE laporan SET status_perbaikan = 'petugas_menuju_lokasi' WHERE id = %s", (laporan_id,))
     conn.commit()
     conn.close()
 
-    # Injeksi log kronologis baru ke dalam array riwayat_pembaruan di MongoDB
     waktu_sekarang = datetime.now().isoformat()
     koleksi_laporan.update_one(
         {"laporan_id": laporan_id},
@@ -669,7 +653,7 @@ def petugas_terima_tugas(tugas_id: int):
             "status": "petugas_menuju_lokasi",
             "waktu": waktu_sekarang,
             "diperbarui_oleh": f"petugas_tugas_id_{tugas_id}",
-            "catatan": "Petugas telah mengonfirmasi penugasan dan sedang bergerak menuju lokasi."
+            "catatan": "Petugas telah mengonfirmasi penugasan and sedang bergerak menuju lokasi."
         }}}
     )
     return {"pesan": "Konfirmasi penugasan berhasil, petugas sedang menuju lokasi."}
@@ -697,7 +681,7 @@ def petugas_mulai_perbaikan(tugas_id: int):
             "status": "sedang_diperbaiki",
             "waktu": waktu_sekarang,
             "diperbarui_oleh": f"petugas_tugas_id_{tugas_id}",
-            "catatan": f"Fasilitas rusak sedang dalam proses perbaikan teknis di lapangan."
+            "catatan": "Fasilitas rusak sedang dalam proses perbaikan teknis di lapangan."
         }}}
     )
     return {"pesan": f"Status laporan {laporan_id} berhasil diubah menjadi Sedang Diperbaiki."}
@@ -714,12 +698,10 @@ def petugas_selesai_perbaikan(tugas_id: int, data: KonfirmasiSelesai):
             raise HTTPException(status_code=404, detail="ID Penugasan tidak ditemukan")
         
         laporan_id = tugas['laporan_id']
-        # Update status akhir di MySQL menjadi selesai
         cursor.execute("UPDATE laporan SET status_perbaikan = 'selesai' WHERE id = %s", (laporan_id,))
     conn.commit()
     conn.close()
 
-    # Update MongoDB: Masukkan log selesai dan buat field baru bernama 'foto_bukti_selesai'
     waktu_sekarang = datetime.now().isoformat()
     koleksi_laporan.update_one(
         {"laporan_id": laporan_id},
@@ -745,7 +727,6 @@ def petugas_selesai_perbaikan(tugas_id: int, data: KonfirmasiSelesai):
 def get_statistik_status():
     conn = get_mysql_connection()
     with conn.cursor() as cursor:
-        # Mengelompokkan dan menghitung jumlah laporan berdasarkan statusnya
         sql = "SELECT status_perbaikan, COUNT(*) as total FROM laporan GROUP BY status_perbaikan"
         cursor.execute(sql)
         hasil = cursor.fetchall()
@@ -757,7 +738,6 @@ def get_statistik_status():
 def get_kategori_terbanyak():
     conn = get_mysql_connection()
     with conn.cursor() as cursor:
-        # Menggabungkan tabel laporan dan kategori untuk mendapatkan nama kategori
         sql = """
         SELECT k.nama_kategori, COUNT(l.id) as total_laporan 
         FROM laporan l
@@ -775,7 +755,6 @@ def get_kategori_terbanyak():
 def get_performa_petugas():
     conn = get_mysql_connection()
     with conn.cursor() as cursor:
-        # Menghitung berapa banyak tugas yang ditangani oleh masing-masing petugas
         sql = """
         SELECT p.petugas_id, u.nama as nama_petugas, COUNT(p.id) as total_tugas
         FROM penugasan_petugas p

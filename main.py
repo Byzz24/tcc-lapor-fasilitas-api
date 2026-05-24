@@ -509,14 +509,13 @@ def ganti_password_profil(user_id: int, data: UpdatePasswordRequest):
 def get_laporan_feed(limit: int = 10, offset: int = 0):
     conn = get_mysql_connection()
     with conn.cursor() as cursor:
-        # Mengambil data dengan batasan jumlah untuk infinite scroll di sisi klien (Flutter)
-        sql = """
+        # Menggunakan f-string khusus untuk LIMIT dan OFFSET agar tidak dibungkus tanda kutip oleh PyMySQL
+        sql = f"""
         SELECT id, lokasi_administratif, deskripsi_kerusakan, status_perbaikan 
         FROM laporan 
-        LIMIT %s OFFSET %s
+        LIMIT {int(limit)} OFFSET {int(offset)}
         """
-        # Perlu dikonversi ke int secara eksplisit untuk berjaga-jaga
-        cursor.execute(sql, (int(limit), int(offset)))
+        cursor.execute(sql)
         laporan = cursor.fetchall()
     conn.close()
     return {

@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
 import pymysql
@@ -9,8 +10,6 @@ import uuid
 from datetime import datetime
 import jwt
 import bcrypt
-from fastapi import Header
-from fastapi import UploadFile, File
 from google.cloud import storage
 import secrets
 
@@ -22,6 +21,14 @@ app = FastAPI(
     title="API Lapor Fasilitas Umum",
     description="Backend API Sistem Pelaporan Kerusakan Fasilitas Umum TCC",
     version="1.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # ==========================================

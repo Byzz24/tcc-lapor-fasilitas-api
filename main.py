@@ -342,14 +342,17 @@ def get_semua_laporan():
     conn.close()
     return {"data": laporan}
 
-# Endpoint 10: Update Status Laporan (SQL & NoSQL)
+# Endpoint 10: Update Status Laporan (SQL & NoSQL) - DIPERBAIKI (ANTI-LOCK)
 @app.put("/api/laporan/{laporan_id}/status")
 def update_status_laporan(laporan_id: str, update: StatusUpdate):
-    # 1. Update MySQL dengan pengamanan Try-Except-Finally
+    # 1. Normalisasi: Jika aplikasi mengirim "sedang_diperbaiki", MySQL akan menerimanya sebagai "diproses"
+    status_aman = "diproses" if update.status_baru == "sedang_diperbaiki" else update.status_baru
+
+    # 2. Update MySQL dengan Try-Except-Finally untuk memastikan koneksi tidak tersangkut
     conn = get_mysql_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute("UPDATE laporan SET status_perbaikan = %s WHERE id = %s", (update.status_baru, laporan_id))
+            cursor.execute("UPDATE laporan SET status_perbaikan = %s WHERE id = %s", (status_aman, laporan_id))
             
             # Ambil pelapor_id untuk keperluan notifikasi
             cursor.execute("SELECT pelapor_id FROM laporan WHERE id = %s", (laporan_id,))
@@ -358,17 +361,17 @@ def update_status_laporan(laporan_id: str, update: StatusUpdate):
         conn.commit()
     except Exception as e:
         conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Gagal mengupdate MySQL: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database Lock/Error MySQL: {str(e)}")
     finally:
-        conn.close() # INI PENYELAMATNYA: Pintu database selalu ditutup!
+        conn.close() # Ini wajib agar database tidak nge-lock (freeze)
 
-    # 2. Update History di MongoDB
+    # 3. Update History di MongoDB
+    waktu_sekarang = datetime.now().isoformat()
     try:
-        waktu_sekarang = datetime.now().isoformat()
         koleksi_laporan.update_one(
             {"laporan_id": laporan_id},
             {"$push": {"riwayat_pembaruan": {
-                "status": update.status_baru,
+                "status": status_aman,
                 "waktu": waktu_sekarang,
                 "diperbarui_oleh": update.diperbarui_oleh,
                 "catatan": update.catatan
@@ -377,7 +380,7 @@ def update_status_laporan(laporan_id: str, update: StatusUpdate):
     except Exception as e:
         print(f"Gagal mengupdate MongoDB: {str(e)}")
     
-    # 3. Mengirim Notifikasi ke HP Pelapor (Warga)
+    # 4. Mengirim Notifikasi ke HP Pelapor (Warga)
     if pelapor_id:
         try:
             conn_notif = get_mysql_connection()
@@ -389,7 +392,7 @@ def update_status_laporan(laporan_id: str, update: StatusUpdate):
                 conn_notif.close()
 
             if user and user.get('fcm_token'):
-                status_terbaca = update.status_baru.replace('_', ' ').title()
+                status_terbaca = status_aman.replace('_', ' ').title()
                 kirim_notifikasi(
                     user['fcm_token'], 
                     "Pembaruan Status Laporan", 
@@ -504,7 +507,6 @@ def login_user(kredensial: UserLogin):
     }
     token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
-    # UBAH BAGIAN RETURN INI SAJA:
     return {
         "pesan": "Login berhasil",
         "access_token": token,
@@ -512,9 +514,7 @@ def login_user(kredensial: UserLogin):
         "user_info": {
             "id": user["id"],
             "nama": user["nama"],
-            "email": user["email"],               # TAMBAHKAN BARIS INI
-            "role": user["role"],
-            "no_telp": user.get("no_telp", "")    # TAMBAHKAN BARIS INI (Gunakan .get agar aman jika NULL)
+            "role": user["role"]
         }
     }
 
@@ -721,17 +721,21 @@ class KonfirmasiSelesai(BaseModel):
 @app.put("/api/penugasan/{tugas_id}/terima")
 def petugas_terima_tugas(tugas_id: int):
     conn = get_mysql_connection()
-    with conn.cursor() as cursor:
-        cursor.execute("SELECT laporan_id FROM penugasan_petugas WHERE id = %s", (tugas_id,))
-        tugas = cursor.fetchone()
-        if not tugas:
-            conn.close()
-            raise HTTPException(status_code=404, detail="ID Penugasan tidak ditemukan di MySQL")
-        
-        laporan_id = tugas['laporan_id']
-        cursor.execute("UPDATE laporan SET status_perbaikan = 'petugas_menuju_lokasi' WHERE id = %s", (laporan_id,))
-    conn.commit()
-    conn.close()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT laporan_id FROM penugasan_petugas WHERE id = %s", (tugas_id,))
+            tugas = cursor.fetchone()
+            if not tugas:
+                raise HTTPException(status_code=404, detail="ID Penugasan tidak ditemukan di MySQL")
+            
+            laporan_id = tugas['laporan_id']
+            cursor.execute("UPDATE laporan SET status_perbaikan = 'petugas_menuju_lokasi' WHERE id = %s", (laporan_id,))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
 
     waktu_sekarang = datetime.now().isoformat()
     koleksi_laporan.update_one(
@@ -749,23 +753,28 @@ def petugas_terima_tugas(tugas_id: int):
 @app.put("/api/penugasan/{tugas_id}/progress")
 def petugas_mulai_perbaikan(tugas_id: int):
     conn = get_mysql_connection()
-    with conn.cursor() as cursor:
-        cursor.execute("SELECT laporan_id FROM penugasan_petugas WHERE id = %s", (tugas_id,))
-        tugas = cursor.fetchone()
-        if not tugas:
-            conn.close()
-            raise HTTPException(status_code=404, detail="ID Penugasan tidak ditemukan")
-        
-        laporan_id = tugas['laporan_id']
-        cursor.execute("UPDATE laporan SET status_perbaikan = 'sedang_diperbaiki' WHERE id = %s", (laporan_id,))
-    conn.commit()
-    conn.close()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT laporan_id FROM penugasan_petugas WHERE id = %s", (tugas_id,))
+            tugas = cursor.fetchone()
+            if not tugas:
+                raise HTTPException(status_code=404, detail="ID Penugasan tidak ditemukan")
+            
+            laporan_id = tugas['laporan_id']
+            # Normalisasi menjadi 'diproses' untuk menghindari penolakan ENUM MySQL
+            cursor.execute("UPDATE laporan SET status_perbaikan = 'diproses' WHERE id = %s", (laporan_id,))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
 
     waktu_sekarang = datetime.now().isoformat()
     koleksi_laporan.update_one(
         {"laporan_id": laporan_id},
         {"$push": {"riwayat_pembaruan": {
-            "status": "sedang_diperbaiki",
+            "status": "diproses",
             "waktu": waktu_sekarang,
             "diperbarui_oleh": f"petugas_tugas_id_{tugas_id}",
             "catatan": "Fasilitas rusak sedang dalam proses perbaikan teknis di lapangan."
@@ -777,17 +786,21 @@ def petugas_mulai_perbaikan(tugas_id: int):
 @app.post("/api/penugasan/{tugas_id}/selesai")
 def petugas_selesai_perbaikan(tugas_id: int, data: KonfirmasiSelesai):
     conn = get_mysql_connection()
-    with conn.cursor() as cursor:
-        cursor.execute("SELECT laporan_id FROM penugasan_petugas WHERE id = %s", (tugas_id,))
-        tugas = cursor.fetchone()
-        if not tugas:
-            conn.close()
-            raise HTTPException(status_code=404, detail="ID Penugasan tidak ditemukan")
-        
-        laporan_id = tugas['laporan_id']
-        cursor.execute("UPDATE laporan SET status_perbaikan = 'selesai' WHERE id = %s", (laporan_id,))
-    conn.commit()
-    conn.close()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT laporan_id FROM penugasan_petugas WHERE id = %s", (tugas_id,))
+            tugas = cursor.fetchone()
+            if not tugas:
+                raise HTTPException(status_code=404, detail="ID Penugasan tidak ditemukan")
+            
+            laporan_id = tugas['laporan_id']
+            cursor.execute("UPDATE laporan SET status_perbaikan = 'selesai' WHERE id = %s", (laporan_id,))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
 
     waktu_sekarang = datetime.now().isoformat()
     koleksi_laporan.update_one(

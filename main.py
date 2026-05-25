@@ -494,6 +494,7 @@ def login_user(kredensial: UserLogin):
     }
     token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
+    # UBAH BAGIAN RETURN INI SAJA:
     return {
         "pesan": "Login berhasil",
         "access_token": token,
@@ -501,7 +502,9 @@ def login_user(kredensial: UserLogin):
         "user_info": {
             "id": user["id"],
             "nama": user["nama"],
-            "role": user["role"]
+            "email": user["email"],               # TAMBAHKAN BARIS INI
+            "role": user["role"],
+            "no_telp": user.get("no_telp", "")    # TAMBAHKAN BARIS INI (Gunakan .get agar aman jika NULL)
         }
     }
 
@@ -873,3 +876,21 @@ def update_fcm_token(user_id: int, data: FCMTokenRequest):
             raise HTTPException(status_code=500, detail="Gagal menyimpan token. Pastikan kolom fcm_token ada di tabel users.")
     conn.close()
     return {"pesan": "Token perangkat berhasil didaftarkan untuk notifikasi"}
+
+# Endpoint 34: Get Profil User Spesifik
+@app.get("/api/users/{user_id}/profil")
+def get_profil_user(user_id: int):
+    conn = get_mysql_connection()
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT nama, email, role, no_telp, fcm_token FROM users WHERE id = %s", (user_id,))
+        user = cursor.fetchone()
+    conn.close()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User tidak ditemukan")
+        
+    # Memastikan aplikasi Flutter tidak crash jika no_telp kosong di database
+    if user.get('no_telp') is None:
+        user['no_telp'] = ""
+        
+    return {"data": user}

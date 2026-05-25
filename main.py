@@ -345,39 +345,48 @@ def get_semua_laporan():
 # Endpoint 10: Update Status Laporan (SQL & NoSQL)
 @app.put("/api/laporan/{laporan_id}/status")
 def update_status_laporan(laporan_id: str, update: StatusUpdate):
-    # Update MySQL
+    # 1. Update MySQL dengan pengamanan Try-Except-Finally
     conn = get_mysql_connection()
-    with conn.cursor() as cursor:
-        cursor.execute("UPDATE laporan SET status_perbaikan = %s WHERE id = %s", (update.status_baru, laporan_id))
-        
-        # Ambil pelapor_id untuk keperluan notifikasi
-        cursor.execute("SELECT pelapor_id FROM laporan WHERE id = %s", (laporan_id,))
-        hasil = cursor.fetchone()
-        pelapor_id = hasil['pelapor_id'] if hasil else None
-        
-    conn.commit()
-    conn.close()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("UPDATE laporan SET status_perbaikan = %s WHERE id = %s", (update.status_baru, laporan_id))
+            
+            # Ambil pelapor_id untuk keperluan notifikasi
+            cursor.execute("SELECT pelapor_id FROM laporan WHERE id = %s", (laporan_id,))
+            hasil = cursor.fetchone()
+            pelapor_id = hasil['pelapor_id'] if hasil else None
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Gagal mengupdate MySQL: {str(e)}")
+    finally:
+        conn.close() # INI PENYELAMATNYA: Pintu database selalu ditutup!
 
-    # Update History di MongoDB
-    waktu_sekarang = datetime.now().isoformat()
-    koleksi_laporan.update_one(
-        {"laporan_id": laporan_id},
-        {"$push": {"riwayat_pembaruan": {
-            "status": update.status_baru,
-            "waktu": waktu_sekarang,
-            "diperbarui_oleh": update.diperbarui_oleh,
-            "catatan": update.catatan
-        }}}
-    )
+    # 2. Update History di MongoDB
+    try:
+        waktu_sekarang = datetime.now().isoformat()
+        koleksi_laporan.update_one(
+            {"laporan_id": laporan_id},
+            {"$push": {"riwayat_pembaruan": {
+                "status": update.status_baru,
+                "waktu": waktu_sekarang,
+                "diperbarui_oleh": update.diperbarui_oleh,
+                "catatan": update.catatan
+            }}}
+        )
+    except Exception as e:
+        print(f"Gagal mengupdate MongoDB: {str(e)}")
     
-    # Mengirim Notifikasi ke HP Pelapor (Warga)
+    # 3. Mengirim Notifikasi ke HP Pelapor (Warga)
     if pelapor_id:
         try:
-            conn = get_mysql_connection()
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT fcm_token FROM users WHERE id = %s", (pelapor_id,))
-                user = cursor.fetchone()
-            conn.close()
+            conn_notif = get_mysql_connection()
+            try:
+                with conn_notif.cursor() as cursor:
+                    cursor.execute("SELECT fcm_token FROM users WHERE id = %s", (pelapor_id,))
+                    user = cursor.fetchone()
+            finally:
+                conn_notif.close()
 
             if user and user.get('fcm_token'):
                 status_terbaca = update.status_baru.replace('_', ' ').title()
@@ -388,6 +397,7 @@ def update_status_laporan(laporan_id: str, update: StatusUpdate):
                 )
         except Exception as e:
             print(f"Sistem notifikasi warga error: {e}")
+            
     return {"pesan": "Status pelaporan berhasil diperbarui"}
 
 # Endpoint 11: Delete Laporan (Hapus dari SQL & NoSQL)

@@ -157,6 +157,9 @@ def buat_laporan_baru(data: LaporanMasuk):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error MongoDB: {str(e)}")
 
+    # TODO: [FCM NOTIFIKASI] Ambil semua fcm_token dari user dengan role 'petugas' dari MySQL, 
+    # lalu kirimkan push notification "Ada laporan kerusakan baru masuk di area Anda!".
+
     return {"pesan": "Laporan berhasil dibuat", "laporan_id": laporan_id}
 
 # Endpoint 3: Read Detail Laporan (Menggabungkan data SQL dan NoSQL)
@@ -211,6 +214,25 @@ class KomentarBaru(BaseModel):
 class PenugasanBaru(BaseModel):
     petugas_id: int
     catatan_dinas: str
+
+class UserLogin(BaseModel):
+    email: str
+    password: str
+
+class LupaPasswordRequest(BaseModel):
+    email: str
+
+class UpdatePasswordRequest(BaseModel):
+    password_lama: str
+    password_baru: str
+
+# --- MODEL BARU UNTUK PROFIL & NOTIFIKASI ---
+class UpdateProfilRequest(BaseModel):
+    nama: str
+    no_telp: str
+
+class FCMTokenRequest(BaseModel):
+    fcm_token: str
 
 # --- ENTITAS USERS ---
 # Endpoint 4: Get All Users
@@ -286,6 +308,12 @@ def update_status_laporan(laporan_id: str, update: StatusUpdate):
     conn = get_mysql_connection()
     with conn.cursor() as cursor:
         cursor.execute("UPDATE laporan SET status_perbaikan = %s WHERE id = %s", (update.status_baru, laporan_id))
+        
+        # Ambil pelapor_id untuk keperluan notifikasi
+        cursor.execute("SELECT pelapor_id FROM laporan WHERE id = %s", (laporan_id,))
+        hasil = cursor.fetchone()
+        pelapor_id = hasil['pelapor_id'] if hasil else None
+        
     conn.commit()
     conn.close()
 
@@ -300,6 +328,10 @@ def update_status_laporan(laporan_id: str, update: StatusUpdate):
             "catatan": update.catatan
         }}}
     )
+    
+    # TODO: [FCM NOTIFIKASI] Ambil fcm_token milik pelapor_id dari MySQL, lalu kirimkan push notification 
+    # "Status laporan Anda telah diperbarui menjadi: {update.status_baru}".
+
     return {"pesan": "Status pelaporan berhasil diperbarui"}
 
 # Endpoint 11: Delete Laporan (Hapus dari SQL & NoSQL)
@@ -369,20 +401,6 @@ def get_rekap_bulanan(bulan_tahun: str):
 # Konfigurasi JWT 
 JWT_SECRET = os.getenv("JWT_SECRET", "KunciRahasiaTCC2026")
 JWT_ALGORITHM = "HS256"
-
-# ==========================================
-# MODEL DATA Autentikasi
-# ==========================================
-class UserLogin(BaseModel):
-    email: str
-    password: str
-
-class LupaPasswordRequest(BaseModel):
-    email: str
-
-class UpdatePasswordRequest(BaseModel):
-    password_lama: str
-    password_baru: str
 
 # --- ENTITAS AUTENTIKASI & KEAMANAN ---
 
@@ -766,3 +784,36 @@ def get_performa_petugas():
         hasil = cursor.fetchall()
     conn.close()
     return {"data": hasil}
+
+# ==========================================
+# ENDPOINT MANAJEMEN PROFIL & FCM TOKEN
+# ==========================================
+
+# Endpoint 32: Update Profil Dasar (Nama & No Telp)
+@app.put("/api/users/{user_id}/profil")
+def update_profil_dasar(user_id: int, data: UpdateProfilRequest):
+    conn = get_mysql_connection()
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT id FROM users WHERE id = %s", (user_id,))
+        if not cursor.fetchone():
+            conn.close()
+            raise HTTPException(status_code=404, detail="User tidak ditemukan")
+            
+        cursor.execute("UPDATE users SET nama = %s, no_telp = %s WHERE id = %s", (data.nama, data.no_telp, user_id))
+        conn.commit()
+    conn.close()
+    return {"pesan": "Data profil berhasil diperbarui", "data": {"nama": data.nama, "no_telp": data.no_telp}}
+
+# Endpoint 33: Simpan FCM Token untuk Notifikasi
+@app.put("/api/users/{user_id}/fcm-token")
+def update_fcm_token(user_id: int, data: FCMTokenRequest):
+    conn = get_mysql_connection()
+    with conn.cursor() as cursor:
+        try:
+            cursor.execute("UPDATE users SET fcm_token = %s WHERE id = %s", (data.fcm_token, user_id))
+            conn.commit()
+        except pymysql.err.OperationalError:
+            conn.close()
+            raise HTTPException(status_code=500, detail="Gagal menyimpan token. Pastikan kolom fcm_token ada di tabel users.")
+    conn.close()
+    return {"pesan": "Token perangkat berhasil didaftarkan untuk notifikasi"}

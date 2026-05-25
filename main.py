@@ -12,6 +12,34 @@ import jwt
 import bcrypt
 from google.cloud import storage
 import secrets
+import firebase_admin
+from firebase_admin import credentials, messaging
+
+# Inisialisasi Firebase Admin
+try:
+    # untuk testing lokal
+    if os.path.exists("serviceAccountKey.json"):
+        cred = credentials.Certificate("serviceAccountKey.json")
+        firebase_admin.initialize_app(cred)
+    else:
+        # 2. Jika file tidak ada (saat di-deploy ke Cloud Run), gunakan kredensial bawaan GCP
+        firebase_admin.initialize_app()
+except ValueError:
+    # Mengabaikan error jika aplikasi sudah terinisialisasi sebelumnya
+    pass
+
+# Fungsi pembantu untuk menembakkan notifikasi ke HP
+def kirim_notifikasi(fcm_token: str, judul: str, pesan: str):
+    if not fcm_token: return
+    try:
+        pesan_fcm = messaging.Message(
+            notification=messaging.Notification(title=judul, body=pesan),
+            token=fcm_token,
+        )
+        messaging.send(pesan_fcm)
+        print(f"Notifikasi berhasil dikirim ke: {fcm_token[:10]}...")
+    except Exception as e:
+        print(f"Gagal mengirim notifikasi: {str(e)}")
 
 # Memuat variabel dari file .env
 load_dotenv()
@@ -157,9 +185,22 @@ def buat_laporan_baru(data: LaporanMasuk):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error MongoDB: {str(e)}")
 
-    # TODO: [FCM NOTIFIKASI] Ambil semua fcm_token dari user dengan role 'petugas' dari MySQL, 
-    # lalu kirimkan push notification "Ada laporan kerusakan baru masuk di area Anda!".
+    # Mengirim Notifikasi ke semua Petugas
+    try:
+        conn = get_mysql_connection()
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT fcm_token FROM users WHERE role IN ('petugas', 'admin', 'dinas') AND fcm_token IS NOT NULL")
+            petugas_tokens = cursor.fetchall()
+        conn.close()
 
+        for p in petugas_tokens:
+            kirim_notifikasi(
+                p['fcm_token'], 
+                "Laporan Baru Masuk!", 
+                f"Ada kerusakan baru di area {data.lokasi_administratif}. Segera cek aplikasi!"
+            )
+    except Exception as e:
+        print(f"Sistem notifikasi petugas error: {e}")
     return {"pesan": "Laporan berhasil dibuat", "laporan_id": laporan_id}
 
 # Endpoint 3: Read Detail Laporan (Menggabungkan data SQL dan NoSQL)
@@ -329,9 +370,24 @@ def update_status_laporan(laporan_id: str, update: StatusUpdate):
         }}}
     )
     
-    # TODO: [FCM NOTIFIKASI] Ambil fcm_token milik pelapor_id dari MySQL, lalu kirimkan push notification 
-    # "Status laporan Anda telah diperbarui menjadi: {update.status_baru}".
+    # Mengirim Notifikasi ke HP Pelapor (Warga)
+    if pelapor_id:
+        try:
+            conn = get_mysql_connection()
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT fcm_token FROM users WHERE id = %s", (pelapor_id,))
+                user = cursor.fetchone()
+            conn.close()
 
+            if user and user.get('fcm_token'):
+                status_terbaca = update.status_baru.replace('_', ' ').title()
+                kirim_notifikasi(
+                    user['fcm_token'], 
+                    "Pembaruan Status Laporan", 
+                    f"Laporan Anda sekarang berstatus: {status_terbaca}"
+                )
+        except Exception as e:
+            print(f"Sistem notifikasi warga error: {e}")
     return {"pesan": "Status pelaporan berhasil diperbarui"}
 
 # Endpoint 11: Delete Laporan (Hapus dari SQL & NoSQL)

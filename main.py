@@ -15,20 +15,20 @@ import secrets
 import firebase_admin
 from firebase_admin import credentials, messaging
 
-# Inisialisasi Firebase Admin
+# Inisialisasi Firebase Admin SDK
 try:
-    # untuk testing lokal
+    # Penggunaan service account key saat pengembangan lokal
     if os.path.exists("serviceAccountKey.json"):
         cred = credentials.Certificate("serviceAccountKey.json")
         firebase_admin.initialize_app(cred)
     else:
-        # 2. Jika file tidak ada (saat di-deploy ke Cloud Run), gunakan kredensial bawaan GCP
+        # Penggunaan Application Default Credentials (ADC) saat berjalan di Cloud Run
         firebase_admin.initialize_app()
 except ValueError:
-    # Mengabaikan error jika aplikasi sudah terinisialisasi sebelumnya
+    # Abaikan jika Firebase sudah diinisialisasi sebelumnya
     pass
 
-# Fungsi pembantu untuk menembakkan notifikasi ke HP
+# Mengirim notifikasi push ke perangkat via Firebase Cloud Messaging (FCM)
 def kirim_notifikasi(fcm_token: str, judul: str, pesan: str):
     if not fcm_token: return
     try:
@@ -62,12 +62,13 @@ app.add_middleware(
 # ==========================================
 # KONFIGURASI DATABASE
 # ==========================================
-# 1. Koneksi MySQL
+
+# Koneksi MySQL (adaptif: Unix Socket di Cloud Run, TCP/IP di lokal)
 def get_mysql_connection():
     instance_connection_name = os.getenv("INSTANCE_CONNECTION_NAME")
     
     if instance_connection_name:
-        # Berjalan di Cloud Run (Menggunakan Unix Socket)
+        # Penggunaan Unix Socket untuk terhubung ke Cloud SQL saat di Cloud Run
         return pymysql.connect(
             unix_socket=f"/cloudsql/{instance_connection_name}",
             user=os.getenv("MYSQL_USER", "admin_api"),
@@ -76,7 +77,7 @@ def get_mysql_connection():
             cursorclass=pymysql.cursors.DictCursor
         )
     else:
-        # Berjalan di Laptop (Menggunakan TCP/IP)
+        # Penggunaan koneksi TCP/IP standar saat di lokal
         return pymysql.connect(
             host=os.getenv("MYSQL_HOST", "localhost"),
             user=os.getenv("MYSQL_USER", "root"),
@@ -85,7 +86,7 @@ def get_mysql_connection():
             cursorclass=pymysql.cursors.DictCursor
         )
 
-# 2. Koneksi MongoDB Atlas
+# Koneksi MongoDB Atlas
 mongo_client = MongoClient(os.getenv("MONGO_URI"))
 db_nosql = mongo_client["db_lapor_nosql"]
 koleksi_laporan = db_nosql["detail_laporan_lapangan"]
@@ -114,7 +115,7 @@ def health_check():
     status_mysql = "Disconnected"
     status_mongo = "Disconnected"
     
-    # Cek MySQL
+    # Pengecekan MySQL
     try:
         conn = get_mysql_connection()
         conn.close()
@@ -122,7 +123,7 @@ def health_check():
     except Exception as e:
         status_mysql = str(e)
         
-    # Cek MongoDB
+    # Pengecekan MongoDB
     try:
         mongo_client.admin.command('ping')
         status_mongo = "Connected"
@@ -137,14 +138,14 @@ def health_check():
         }
     }
 
-# Endpoint 2: Create Laporan (Menulis ke SQL dan NoSQL secara bersamaan)
+# Endpoint 2: Buat Laporan Baru (tulis ke MySQL dan MongoDB secara bersamaan)
 @app.post("/api/laporan")
 def buat_laporan_baru(data: LaporanMasuk):
-    # Buat UUID sebagai The Bridge
+    # UUID sebagai identifier unik yang menghubungkan data di MySQL dan MongoDB
     laporan_id = str(uuid.uuid4())
     waktu_sekarang = datetime.now()
 
-    # 1. Simpan ke MySQL (Data Terstruktur)
+    # Penyimpanan data terstruktur laporan ke MySQL
     try:
         conn = get_mysql_connection()
         with conn.cursor() as cursor:
@@ -161,7 +162,7 @@ def buat_laporan_baru(data: LaporanMasuk):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error MySQL: {str(e)}")
 
-    # 2. Simpan ke MongoDB (Data Spasial & Multimedia)
+    # Penyimpanan data spasial dan foto bukti ke MongoDB
     try:
         dokumen_nosql = {
             "laporan_id": laporan_id,
@@ -185,7 +186,7 @@ def buat_laporan_baru(data: LaporanMasuk):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error MongoDB: {str(e)}")
 
-    # Mengirim Notifikasi ke semua Petugas
+    # Pengiriman notifikasi FCM ke seluruh petugas yang terdaftar
     try:
         conn = get_mysql_connection()
         with conn.cursor() as cursor:
@@ -206,7 +207,7 @@ def buat_laporan_baru(data: LaporanMasuk):
 # Endpoint 3: Read Detail Laporan (Menggabungkan data SQL dan NoSQL)
 @app.get("/api/laporan/{laporan_id}")
 def dapatkan_detail_laporan(laporan_id: str):
-    # 1. Ambil data dasar dari MySQL
+    # Pengambilan data terstruktur dari MySQL
     conn = get_mysql_connection()
     with conn.cursor() as cursor:
         cursor.execute("SELECT * FROM laporan WHERE id = %s", (laporan_id,))
@@ -216,13 +217,13 @@ def dapatkan_detail_laporan(laporan_id: str):
     if not data_sql:
         raise HTTPException(status_code=404, detail="Laporan tidak ditemukan di MySQL")
 
-    # 2. Ambil data tambahan dari MongoDB
+    # Pengambilan data spasial dan riwayat penanganan dari MongoDB
     data_nosql = koleksi_laporan.find_one({"laporan_id": laporan_id}, {"_id": 0})
 
     if not data_nosql:
         raise HTTPException(status_code=404, detail="Detail laporan tidak ditemukan di MongoDB")
 
-    # Gabungkan (Merge) kedua data sebagai respon API utuh
+    # Penggabungan data dari kedua sumber menjadi satu respons
     return {
         "informasi_umum": data_sql,
         "detail_lapangan": data_nosql
@@ -267,7 +268,7 @@ class UpdatePasswordRequest(BaseModel):
     password_lama: str
     password_baru: str
 
-# --- MODEL BARU UNTUK PROFIL & NOTIFIKASI ---
+# Model data untuk manajemen profil pengguna dan token notifikasi
 class UpdateProfilRequest(BaseModel):
     nama: str
     no_telp: str
@@ -342,19 +343,19 @@ def get_semua_laporan():
     conn.close()
     return {"data": laporan}
 
-# Endpoint 10: Update Status Laporan (SQL & NoSQL) - DIPERBAIKI (ANTI-LOCK)
+# Endpoint 10: Update Status Laporan (MySQL dan MongoDB)
 @app.put("/api/laporan/{laporan_id}/status")
 def update_status_laporan(laporan_id: str, update: StatusUpdate):
-    # 1. Normalisasi: Jika aplikasi mengirim "sedang_diperbaiki", MySQL akan menerimanya sebagai "diproses"
+    # Normalisasi status agar sesuai dengan nilai ENUM yang diterima MySQL
     status_aman = "diproses" if update.status_baru == "sedang_diperbaiki" else update.status_baru
 
-    # 2. Update MySQL dengan Try-Except-Finally untuk memastikan koneksi tidak tersangkut
+    # Pembaruan status di MySQL dengan penanganan error yang aman
     conn = get_mysql_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute("UPDATE laporan SET status_perbaikan = %s WHERE id = %s", (status_aman, laporan_id))
             
-            # Ambil pelapor_id untuk keperluan notifikasi
+            # Pengambilan pelapor_id untuk keperluan notifikasi
             cursor.execute("SELECT pelapor_id FROM laporan WHERE id = %s", (laporan_id,))
             hasil = cursor.fetchone()
             pelapor_id = hasil['pelapor_id'] if hasil else None
@@ -363,9 +364,9 @@ def update_status_laporan(laporan_id: str, update: StatusUpdate):
         conn.rollback()
         raise HTTPException(status_code=500, detail=f"Database Lock/Error MySQL: {str(e)}")
     finally:
-        conn.close() # Ini wajib agar database tidak nge-lock (freeze)
+        conn.close()
 
-    # 3. Update History di MongoDB
+    # Pembaruan riwayat penanganan di MongoDB
     waktu_sekarang = datetime.now().isoformat()
     try:
         koleksi_laporan.update_one(
@@ -380,7 +381,7 @@ def update_status_laporan(laporan_id: str, update: StatusUpdate):
     except Exception as e:
         print(f"Gagal mengupdate MongoDB: {str(e)}")
     
-    # 4. Mengirim Notifikasi ke HP Pelapor (Warga)
+    # Pengiriman notifikasi FCM ke warga pelapor
     if pelapor_id:
         try:
             conn_notif = get_mysql_connection()
@@ -478,7 +479,7 @@ JWT_ALGORITHM = "HS256"
 def login_user(kredensial: UserLogin):
     conn = get_mysql_connection()
     with conn.cursor() as cursor:
-        # Cari user berdasarkan email
+        # Pencarian user berdasarkan email
         cursor.execute("SELECT * FROM users WHERE email = %s", (kredensial.email,))
         user = cursor.fetchone()
     conn.close()
@@ -493,13 +494,13 @@ def login_user(kredensial: UserLogin):
             user['password_hash'].encode('utf-8')
         )
     except Exception:
-        # Fallback jika password di DB masih berupa teks biasa 
+        # Fallback untuk password yang belum di-hash
         password_cocok = (kredensial.password == user['password_hash'])
 
     if not password_cocok:
         raise HTTPException(status_code=401, detail="Email atau password salah")
 
-    # Membuat token JWT yang berisi ID, Nama, dan Role User
+    # Pembuatan JWT token dengan payload data pengguna
     payload = {
         "user_id": user["id"],
         "nama": user["nama"],
@@ -526,9 +527,9 @@ def refresh_token(authorization: str = Header(None)):
     
     token_lama = authorization.split(" ")[1]
     try:
-        # Dekode token lama untuk mengambil payload data
+        # Pendekodean token lama untuk mengambil payload data
         payload = jwt.decode(token_lama, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        # Buat token baru dengan data yang sama untuk memperpanjang masa aktif
+        # Pembuatan token baru dengan data yang sama untuk memperpanjang masa aktif
         token_baru = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
         return {"access_token": token_baru, "token_type": "bearer"}
     except jwt.ExpiredSignatureError:
@@ -548,7 +549,7 @@ def lupa_password(request: LupaPasswordRequest):
     if not user:
         raise HTTPException(status_code=404, detail="Email tidak terdaftar dalam sistem")
     
-    # Bagian ini akan memicu fungsi SMTP Email Server (seperti SendGrid/Mailgun)
+
     return {
         "pesan": f"Instruksi pemulihan kata sandi telah dikirimkan ke {request.email}. Silakan periksa kotak masuk Anda."
     }
@@ -558,7 +559,7 @@ def lupa_password(request: LupaPasswordRequest):
 def ganti_password_profil(user_id: int, data: UpdatePasswordRequest):
     conn = get_mysql_connection()
     with conn.cursor() as cursor:
-        # Ambil hash password saat ini
+        # Pengambilan hash password saat ini
         cursor.execute("SELECT password_hash FROM users WHERE id = %s", (user_id,))
         user = cursor.fetchone()
         
@@ -576,11 +577,10 @@ def ganti_password_profil(user_id: int, data: UpdatePasswordRequest):
             conn.close()
             raise HTTPException(status_code=400, detail="Password lama yang Anda masukkan salah")
 
-        # Hash password baru sebelum disimpan ke database
+        # Hashing password baru sebelum disimpan ke database
         salt = bcrypt.gensalt()
         hashed_baru = bcrypt.hashpw(data.password_baru.encode('utf-8'), salt).decode('utf-8')
 
-        # Update ke database
         cursor.execute("UPDATE users SET password_hash = %s WHERE id = %s", (hashed_baru, user_id))
         conn.commit()
     conn.close()
@@ -591,7 +591,7 @@ def ganti_password_profil(user_id: int, data: UpdatePasswordRequest):
 # FITUR LANJUTAN LAPORAN (MOBILE-FRIENDLY)
 # ==========================================
 
-# PERBAIKAN: Mengubah pola URL (/api/feed/laporan) agar tidak bentrok dengan rute detail (/api/laporan/{laporan_id})
+# Endpoint ini menggunakan pola /api/feed/laporan untuk menghindari konflik URL dengan rute detail /api/laporan/{id}
 # Endpoint 20: Feed Laporan (Pagination / Infinite Scroll)
 @app.get("/api/feed/laporan")
 def get_laporan_feed(limit: int = 10, offset: int = 0):
@@ -761,7 +761,7 @@ def petugas_mulai_perbaikan(tugas_id: int):
                 raise HTTPException(status_code=404, detail="ID Penugasan tidak ditemukan")
             
             laporan_id = tugas['laporan_id']
-            # Normalisasi menjadi 'diproses' untuk menghindari penolakan ENUM MySQL
+            # Normalisasi ke 'diproses' agar sesuai dengan nilai ENUM MySQL
             cursor.execute("UPDATE laporan SET status_perbaikan = 'diproses' WHERE id = %s", (laporan_id,))
         conn.commit()
     except Exception as e:
@@ -912,7 +912,7 @@ def get_profil_user(user_id: int):
     if not user:
         raise HTTPException(status_code=404, detail="User tidak ditemukan")
         
-    # Memastikan aplikasi Flutter tidak crash jika no_telp kosong di database
+    # Penanganan nilai null pada no_telp untuk keamanan sisi klien
     if user.get('no_telp') is None:
         user['no_telp'] = ""
         

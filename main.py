@@ -433,6 +433,17 @@ def tambah_komentar(laporan_id: str, komen: KomentarBaru):
     )
     return {"pesan": "Komentar berhasil ditambahkan"}
 
+# Endpoint 12b: Ambil Daftar Komentar Publik (NoSQL)
+@app.get("/api/laporan/{laporan_id}/komentar")
+def ambil_komentar(laporan_id: str):
+    data_nosql = koleksi_laporan.find_one({"laporan_id": laporan_id}, {"_id": 0, "komentar_publik": 1})
+    if not data_nosql:
+        return {"komentar": []}
+    komentar_list = data_nosql.get("komentar_publik", [])
+    # Urutkan dari terbaru ke terlama
+    komentar_list.sort(key=lambda x: x.get("waktu", ""), reverse=True)
+    return {"komentar": komentar_list}
+
 # --- ENTITAS PENUGASAN PETUGAS ---
 # Endpoint 13: Tugaskan Petugas
 @app.post("/api/laporan/{laporan_id}/penugasan")
